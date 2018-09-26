@@ -1,4 +1,4 @@
-package db2struct
+package db2struct_gorm
 
 import (
 	"fmt"
@@ -11,18 +11,18 @@ import (
 // Constants for return types of golang
 const (
 	golangByteArray  = "[]byte"
-	gureguNullInt    = "null.Int"
-	sqlNullInt       = "sql.NullInt64"
+	gureguNullInt    = "int"
+	sqlNullInt       = "int64"
 	golangInt        = "int"
 	golangInt64      = "int64"
-	gureguNullFloat  = "null.Float"
-	sqlNullFloat     = "sql.NullFloat64"
+	gureguNullFloat  = "float32"
+	sqlNullFloat     = "float64"
 	golangFloat      = "float"
 	golangFloat32    = "float32"
 	golangFloat64    = "float64"
-	gureguNullString = "null.String"
-	sqlNullString    = "sql.NullString"
-	gureguNullTime   = "null.Time"
+	gureguNullString = "string"
+	sqlNullString    = "string"
+	gureguNullTime   = "time.Time"
 	golangTime       = "time.Time"
 )
 
@@ -81,10 +81,10 @@ var Debug = false
 
 // Generate Given a Column map with datatypes and a name structName,
 // attempts to generate a struct definition
-func Generate(columnTypes map[string]map[string]string, tableName string, structName string, pkgName string, jsonAnnotation bool, gormAnnotation bool, gureguTypes bool) ([]byte, error) {
+func Generate(columnTypes []ColumnsInfo, tableName string, structName string, pkgName string, jsonAnnotation bool, gormAnnotation bool, gureguTypes bool) ([]byte, error) {
 	var dbTypes string
 	dbTypes = generateMysqlTypes(columnTypes, 0, jsonAnnotation, gormAnnotation, gureguTypes)
-	src := fmt.Sprintf("package %s\ntype %s %s}",
+	src := fmt.Sprintf("package %s\ntype %s %s\n}",
 		pkgName,
 		structName,
 		dbTypes)
@@ -94,7 +94,21 @@ func Generate(columnTypes map[string]map[string]string, tableName string, struct
 			"	return \"" + tableName + "\"" +
 			"}"
 		src = fmt.Sprintf("%s\n%s", src, tableNameFunc)
+
+		// 找到主键
+		for _, col := range columnTypes {
+			if ignoreCaseEq(col.ColumnKey, "PRI") && ignoreCaseEq(col.DataType, "int") {
+				fieldName := fmtFieldName(stringifyFirstChar(col.ColumnName))
+				isExistFunc := "// IsExists sets the table is exists for this struct type\n" +
+					"func (" + strings.ToLower(string(structName[0])) + " *" + structName + ") IsExists() bool {\n" +
+					"	return " + strings.ToLower(string(structName[0])) + "." + fieldName + " > 0 " +
+					"}"
+				src = fmt.Sprintf("%s\n%s", src, isExistFunc)
+				break
+			}
+		}
 	}
+
 	formatted, err := format.Source([]byte(src))
 	if err != nil {
 		err = fmt.Errorf("error formatting: %s, was formatting\n%s", err, src)
@@ -209,4 +223,8 @@ func stringifyFirstChar(str string) string {
 	}
 
 	return intToWordMap[i] + "_" + str[1:]
+}
+
+func ignoreCaseEq(s1, s2 string) bool {
+	return strings.ToLower(s1) == strings.ToLower(s2)
 }

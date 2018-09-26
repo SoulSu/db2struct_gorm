@@ -1,16 +1,26 @@
-package db2struct
+package db2struct_gorm
 
 import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"sort"
 	"strconv"
 	"strings"
 )
 
+type ColumnsInfo struct {
+	ColumnName string // COLUMN_NAME 行名称
+	ColumnType string // COLUMN_TYPE
+	ColumnKey  string // COLUMN_KEY
+	Extra      string // EXTRA
+	DataType   string // DATA_TYPE 类型
+	NullAble   string // IS_NULLABLE 是否为空
+	Default    string // COLUMN_DEFAULT 默认值
+	Comment    string // COLUMN_COMMENT 备注信息
+}
+
 // GetColumnsFromMysqlTable Select column details from information schema and return map of map
-func GetColumnsFromMysqlTable(mariadbUser string, mariadbPassword string, mariadbHost string, mariadbPort int, mariadbDatabase string, mariadbTable string) (*map[string]map[string]string, error) {
+func GetColumnsFromMysqlTable(mariadbUser string, mariadbPassword string, mariadbHost string, mariadbPort int, mariadbDatabase string, mariadbTable string) ([]ColumnsInfo, error) {
 
 	var err error
 	var db *sql.DB
@@ -28,9 +38,9 @@ func GetColumnsFromMysqlTable(mariadbUser string, mariadbPassword string, mariad
 	}
 
 	// Store colum as map of maps
-	columnDataTypes := make(map[string]map[string]string)
+	columnDataTypes := make([]ColumnsInfo, 0)
 	// Select columnd data from INFORMATION_SCHEMA
-	columnDataTypeQuery := "SELECT COLUMN_NAME, DATA_TYPE, IS_NULLABLE FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = ? AND table_name = ?"
+	columnDataTypeQuery := "SELECT COLUMN_NAME, COLUMN_TYPE, COLUMN_KEY, EXTRA, DATA_TYPE, IS_NULLABLE , COLUMN_DEFAULT, COLUMN_COMMENT FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = ? AND table_name = ?"
 
 	if Debug {
 		fmt.Println("running: " + columnDataTypeQuery)
@@ -49,31 +59,33 @@ func GetColumnsFromMysqlTable(mariadbUser string, mariadbPassword string, mariad
 	}
 
 	for rows.Next() {
-		var column string
-		var dataType string
-		var nullable string
-		rows.Scan(&column, &dataType, &nullable)
+		var columnData = ColumnsInfo{}
+		var i interface{}
+		rows.Scan(&columnData.ColumnName, &columnData.ColumnType, &columnData.ColumnKey,
+			&columnData.Extra, &columnData.DataType, &columnData.NullAble, &i,
+			&columnData.Comment)
+		if i == nil {
+			columnData.Default = "null"
+		} else {
+			d, ok := i.([]byte)
+			if ok {
+				columnData.Default = string(d)
+			}
+		}
 
-		columnDataTypes[column] = map[string]string{"value": dataType, "nullable": nullable}
+		columnDataTypes = append(columnDataTypes, columnData)
 	}
 
-	return &columnDataTypes, err
+	return columnDataTypes, err
 }
 
 // Generate go struct entries for a map[string]interface{} structure
-func generateMysqlTypes(obj map[string]map[string]string, depth int, jsonAnnotation bool, gormAnnotation bool, gureguTypes bool) string {
+func generateMysqlTypes(objs []ColumnsInfo, depth int, jsonAnnotation bool, gormAnnotation bool, gureguTypes bool) string {
 	structure := "struct {"
 
-	keys := make([]string, 0, len(obj))
-	for key := range obj {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
-
-	for _, key := range keys {
-		mysqlType := obj[key]
+	for _, col := range objs {
 		nullable := false
-		if mysqlType["nullable"] == "YES" {
+		if ignoreCaseEq(col.NullAble, "YES") {
 			nullable = true
 		}
 
@@ -81,26 +93,38 @@ func generateMysqlTypes(obj map[string]map[string]string, depth int, jsonAnnotat
 		var valueType string
 		// If the guregu (https://github.com/guregu/null) CLI option is passed use its types, otherwise use go's sql.NullX
 
-		valueType = mysqlTypeToGoType(mysqlType["value"], nullable, gureguTypes)
+		valueType = mysqlTypeToGoType(col.DataType, nullable, gureguTypes)
 
-		fieldName := fmtFieldName(stringifyFirstChar(key))
+		fieldName := fmtFieldName(stringifyFirstChar(col.ColumnName))
 		var annotations []string
 		if gormAnnotation == true {
-			annotations = append(annotations, fmt.Sprintf("gorm:\"column:%s\"", key))
+			at := "gorm:\"column:" + col.ColumnName
+			if ignoreCaseEq(col.ColumnKey, "PRI") {
+				at += ";primary_key"
+			}
+
+			if ignoreCaseEq(col.Extra, "auto_increment") {
+				at += ";AUTO_INCREMENT"
+			}
+			at += fmt.Sprintf(";default:'%s'", col.Default)
+			at += "\""
+			annotations = append(annotations, at)
 		}
 		if jsonAnnotation == true {
-			annotations = append(annotations, fmt.Sprintf("json:\"%s\"", key))
+			annotations = append(annotations, fmt.Sprintf("json:\"%s\"", col.ColumnName))
 		}
 		if len(annotations) > 0 {
-			structure += fmt.Sprintf("\n%s %s `%s`",
+			structure += fmt.Sprintf("\n%s %s `%s` // %s",
 				fieldName,
 				valueType,
-				strings.Join(annotations, " "))
+				strings.Join(annotations, " "),
+				col.Comment)
 
 		} else {
-			structure += fmt.Sprintf("\n%s %s",
+			structure += fmt.Sprintf("\n%s %s // %s",
 				fieldName,
-				valueType)
+				valueType,
+				col.Comment)
 		}
 	}
 	return structure
