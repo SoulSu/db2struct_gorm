@@ -5,7 +5,7 @@ import (
 	"os"
 	"strconv"
 
-	"github.com/db2struct_gorm"
+	"github.com/SoulSu/db2struct_gorm"
 	"github.com/droundy/goopt"
 	_ "github.com/go-sql-driver/mysql"
 	"github.com/howeyc/gopass"
